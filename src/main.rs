@@ -116,7 +116,27 @@ pub extern "C" fn main(hart_id: usize, dtb: usize) -> ! {
 
     #[cfg(feature = "shell")]
     {
-        // TODO: Lab 0
+        'shell: loop {
+            let mut line = alloc::string::String::new();
+            kprint!("PKUOS>");
+            loop {
+                let c = sbi::console_getchar();
+                let ch = c as u8 as char;
+                match ch {
+                    '\n' => {
+                        match line.as_str() {
+                            "whoami" => kprintln!("2400013073"),
+                            "exit" => break 'shell,
+                            _ => {}
+                        }
+                        break;
+                    }
+                    _ => {
+                        line.push(ch);
+                    }
+                }
+            }
+        }
     }
 
     DISKFS.unmount();
