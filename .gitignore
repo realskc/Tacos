@@ -36,6 +36,7 @@ mkfs
 
 # Submissions
 *.tar.bz2
+/*.patch
 
 # Zed
 .zed
