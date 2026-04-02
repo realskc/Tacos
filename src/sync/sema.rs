@@ -35,12 +35,9 @@ impl Semaphore {
     pub fn down(&self) {
         let old = sbi::interrupt::set(false);
 
-        // Is semaphore available?
         while self.value() == 0 {
-            // `push_front` ensures to wake up threads in a fifo manner
-            self.waiters.borrow_mut().push_front(thread::current());
-
-            // Block the current thread until it's awakened by an `up` operation
+            // 为了在相同优先级下保持 FIFO，这里把新的 waiter 放到队尾。
+            self.waiters.borrow_mut().push_back(thread::current());
             thread::block();
         }
         self.value.set(self.value() - 1);
@@ -48,16 +45,38 @@ impl Semaphore {
         sbi::interrupt::set(old);
     }
 
+    fn highest_waiter_index(&self) -> Option<usize> {
+        let waiters = self.waiters.borrow();
+        let mut best: Option<(usize, u32)> = None;
+
+        for (idx, thread) in waiters.iter().enumerate() {
+            let priority = thread.priority();
+            if best.map_or(true, |(_, p)| priority > p) {
+                best = Some((idx, priority));
+            }
+        }
+
+        best.map(|(idx, _)| idx)
+    }
+
+    fn pop_highest_waiter(&self) -> Option<Arc<Thread>> {
+        let idx = self.highest_waiter_index()?;
+        self.waiters.borrow_mut().remove(idx)
+    }
+
+    /// Highest priority among current waiters.
+    pub fn max_priority(&self) -> Option<u32> {
+        self.waiters.borrow().iter().map(|t| t.priority()).max()
+    }
+
     /// V operation
     pub fn up(&self) {
         let old = sbi::interrupt::set(false);
         let count = self.value.replace(self.value() + 1);
 
-        // Check if we need to wake up a sleeping waiter
-        if let Some(thread) = self.waiters.borrow_mut().pop_back() {
+        if let Some(thread) = self.pop_highest_waiter() {
             assert_eq!(count, 0);
-
-            thread::wake_up(thread.clone());
+            thread::wake_up(thread);
         }
 
         sbi::interrupt::set(old);

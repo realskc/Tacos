@@ -9,7 +9,12 @@ pub use self::imp::*;
 pub use self::manager::Manager;
 pub(self) use self::scheduler::{Schedule, Scheduler};
 
+use alloc::collections::BinaryHeap;
 use alloc::sync::Arc;
+use core::cmp::Ordering;
+
+use crate::sbi::interrupt;
+use crate::sync::Lazy;
 
 /// Create a new thread
 pub fn spawn<F>(name: &'static str, f: F) -> Arc<Thread>
@@ -57,9 +62,7 @@ pub fn block() {
     schedule();
 }
 
-/// Wake up a previously blocked thread, mark it as [`Ready`](Status::Ready),
-/// and register it into the scheduler.
-pub fn wake_up(thread: Arc<Thread>) {
+fn wake_up_inner(thread: Arc<Thread>, preempt: bool) {
     assert_eq!(thread.status(), Status::Blocked);
     thread.set_status(Status::Ready);
 
@@ -67,53 +70,89 @@ pub fn wake_up(thread: Arc<Thread>) {
     kprintln!("[THREAD] Wake up {:?}", thread);
 
     Manager::get().scheduler.lock().register(thread);
+
+    if preempt {
+        maybe_preempt();
+    }
+}
+
+/// Wake up a previously blocked thread, mark it as [`Ready`](Status::Ready),
+/// and register it into the scheduler.
+pub fn wake_up(thread: Arc<Thread>) {
+    wake_up_inner(thread, true);
+}
+
+/// Yield the CPU if there is a higher-priority ready thread.
+pub(crate) fn maybe_preempt() {
+    let old = interrupt::set(false);
+    let current_priority = current().priority();
+    let should_preempt = Manager::get()
+        .scheduler
+        .lock()
+        .max_priority()
+        .map_or(false, |p| p > current_priority);
+
+    if should_preempt {
+        schedule();
+    }
+
+    interrupt::set(old);
 }
 
 /// (Lab1) Sets the current thread's priority to a given value
-pub fn set_priority(_priority: u32) {}
+pub fn set_priority(priority: u32) {
+    assert!(priority <= PRI_MAX);
+
+    current().set_priority(priority);
+    maybe_preempt();
+}
 
 /// (Lab1) Returns the current thread's effective priority.
 pub fn get_priority() -> u32 {
-    0
+    current().priority()
 }
 
 pub fn wake_sleeping_threads(now: i64) {
     let mut sleeping = SLEEPING_TASK_LIST.lock();
+    let mut woke_any = false;
+
     while let Some(top) = sleeping.peek() {
         if top.wake_tick > now {
             break;
         }
 
         let entry = sleeping.pop().unwrap();
-        wake_up(entry.thread);
+        wake_up_inner(entry.thread, false);
+        woke_any = true;
+    }
+
+    drop(sleeping);
+
+    if woke_any {
+        maybe_preempt();
     }
 }
 
 /// (Lab1) Make the current thread sleep for the given ticks.
 pub fn sleep(ticks: i64) {
-    use crate::sbi::{interrupt, timer::timer_ticks};
+    use crate::sbi::timer::timer_ticks;
 
     if ticks <= 0 {
         return;
     }
-    let old = interrupt::set(false);
 
+    let old = interrupt::set(false);
     let wake_tick = timer_ticks() + ticks;
-    let current = Manager::get().current.lock().clone();
+    let current = current();
 
     SLEEPING_TASK_LIST.lock().push(SleepEntry {
         wake_tick,
-        thread: current.clone(),
+        thread: current,
     });
-    block();
 
+    block();
     interrupt::set(old);
 }
-
-use alloc::collections::BinaryHeap;
-use core::cmp::Ordering;
-
-use crate::sync::Lazy;
 
 pub struct SleepEntry {
     wake_tick: i64,
@@ -125,6 +164,7 @@ impl PartialEq for SleepEntry {
         self.wake_tick == other.wake_tick && self.thread.id() == other.thread.id()
     }
 }
+
 impl Eq for SleepEntry {}
 
 impl PartialOrd for SleepEntry {
@@ -142,6 +182,6 @@ impl Ord for SleepEntry {
     }
 }
 
-// 默认是大根堆，通过重定义比较改为小根堆
+// BinaryHeap 默认是大根堆，这里通过重定义比较把它改成“小根堆”。
 static SLEEPING_TASK_LIST: Lazy<Mutex<BinaryHeap<SleepEntry>>> =
     Lazy::new(|| Mutex::new(BinaryHeap::new()));

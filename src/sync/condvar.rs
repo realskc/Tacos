@@ -47,8 +47,14 @@ use alloc::sync::Arc;
 use core::cell::RefCell;
 
 use crate::sync::{Lock, MutexGuard, Semaphore};
+use crate::thread;
 
-pub struct Condvar(RefCell<VecDeque<Arc<Semaphore>>>);
+struct Waiter {
+    priority: u32,
+    sema: Arc<Semaphore>,
+}
+
+pub struct Condvar(RefCell<VecDeque<Waiter>>);
 
 unsafe impl Sync for Condvar {}
 unsafe impl Send for Condvar {}
@@ -60,23 +66,41 @@ impl Condvar {
 
     pub fn wait<T, L: Lock>(&self, guard: &mut MutexGuard<'_, T, L>) {
         let sema = Arc::new(Semaphore::new(0));
-        self.0.borrow_mut().push_front(sema.clone());
+        self.0.borrow_mut().push_back(Waiter {
+            priority: thread::current().priority(),
+            sema: sema.clone(),
+        });
 
         guard.release();
         sema.down();
         guard.acquire();
     }
 
+    fn highest_waiter_index(&self) -> Option<usize> {
+        let waiters = self.0.borrow();
+        let mut best: Option<(usize, u32)> = None;
+
+        for (idx, waiter) in waiters.iter().enumerate() {
+            if best.map_or(true, |(_, p)| waiter.priority > p) {
+                best = Some((idx, waiter.priority));
+            }
+        }
+
+        best.map(|(idx, _)| idx)
+    }
+
     /// Wake up one thread from the waiting list
     pub fn notify_one(&self) {
-        if let Some(sema) = self.0.borrow_mut().pop_back() {
-            sema.up();
+        let idx = self.highest_waiter_index();
+        if let Some(waiter) = idx.and_then(|i| self.0.borrow_mut().remove(i)) {
+            waiter.sema.up();
         }
     }
 
     /// Wake up all waiting threads
     pub fn notify_all(&self) {
-        self.0.borrow().iter().for_each(|s| s.up());
-        self.0.borrow_mut().clear();
+        while self.highest_waiter_index().is_some() {
+            self.notify_one();
+        }
     }
 }

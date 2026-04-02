@@ -8,7 +8,8 @@ use core::sync::atomic::{AtomicIsize, AtomicU32, Ordering::SeqCst};
 
 use crate::mem::{kalloc, kfree, PageTable, PG_SIZE};
 use crate::sbi::interrupt;
-use crate::thread::Manager;
+use crate::thread::scheduler::Schedule;
+use crate::thread::{self, Manager};
 use crate::userproc::UserProc;
 
 pub const PRI_DEFAULT: u32 = 31;
@@ -77,6 +78,14 @@ impl Thread {
 
     pub fn context(&self) -> *mut Context {
         (&*self.context.lock()) as *const _ as *mut _
+    }
+
+    pub fn priority(&self) -> u32 {
+        self.priority.load(SeqCst)
+    }
+
+    pub fn set_priority(&self, priority: u32) {
+        self.priority.store(priority, SeqCst);
     }
 
     pub fn overflow(&self) -> bool {
@@ -181,6 +190,7 @@ impl Builder {
         kprintln!("[THREAD] create {:?}", new_thread);
 
         Manager::get().register(new_thread.clone());
+        thread::maybe_preempt();
 
         // Off you go
         new_thread

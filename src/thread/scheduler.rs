@@ -6,6 +6,8 @@
 //!
 
 pub mod fcfs;
+#[cfg(feature = "thread-scheduler-priority")]
+pub mod priority;
 
 use alloc::sync::Arc;
 
@@ -13,7 +15,7 @@ use crate::thread::Thread;
 
 #[cfg(feature = "thread-scheduler-priority")]
 // (Lab1) Your task: priority scheduling
-pub type Scheduler = self::fcfs::Fcfs;
+pub type Scheduler = self::priority::Priority;
 #[cfg(not(feature = "thread-scheduler-priority"))]
 pub type Scheduler = self::fcfs::Fcfs;
 
@@ -26,4 +28,9 @@ pub trait Schedule: Default {
     /// Choose the next thread to run. `None` if scheduler decides to keep running
     /// the current thread.
     fn schedule(&mut self) -> Option<Arc<Thread>>;
+
+    /// The highest priority currently in ready queue.
+    fn max_priority(&self) -> Option<u32> {
+        None
+    }
 }
