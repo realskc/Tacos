@@ -33,4 +33,7 @@ pub trait Schedule: Default {
     fn max_priority(&self) -> Option<u32> {
         None
     }
+
+    /// Requeue a ready thread after its effective priority changes.
+    fn reprioritize(&mut self, _tid: isize, _priority: u32) {}
 }

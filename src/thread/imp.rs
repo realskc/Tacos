@@ -2,6 +2,7 @@
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::arch::global_asm;
 use core::fmt::{self, Debug};
 use core::sync::atomic::{AtomicIsize, AtomicU32, Ordering::SeqCst};
@@ -22,6 +23,13 @@ pub const MAGIC: usize = 0xdeadbeef;
 
 pub type Mutex<T> = crate::sync::Mutex<T, crate::sync::Intr>;
 
+#[derive(Clone, Debug)]
+pub struct Donation {
+    pub donor_tid: isize,
+    pub lock_id: usize,
+    pub priority: u32,
+}
+
 /* --------------------------------- Thread --------------------------------- */
 /// All data of a kernel thread
 #[repr(C)]
@@ -31,7 +39,10 @@ pub struct Thread {
     stack: usize,
     status: Mutex<Status>,
     context: Mutex<Context>,
+    base_priority: AtomicU32,
     pub priority: AtomicU32,
+    waiting_lock: Mutex<Option<usize>>,
+    donations: Mutex<Vec<Donation>>,
     pub userproc: Option<UserProc>,
     pub pagetable: Option<Mutex<PageTable>>,
 }
@@ -54,7 +65,10 @@ impl Thread {
             stack,
             status: Mutex::new(Status::Ready),
             context: Mutex::new(Context::new(stack, entry)),
+            base_priority: AtomicU32::new(priority),
             priority: AtomicU32::new(priority),
+            waiting_lock: Mutex::new(None),
+            donations: Mutex::new(Vec::new()),
             userproc,
             pagetable: pagetable.map(Mutex::new),
         }
@@ -84,8 +98,64 @@ impl Thread {
         self.priority.load(SeqCst)
     }
 
-    pub fn set_priority(&self, priority: u32) {
-        self.priority.store(priority, SeqCst);
+    pub fn base_priority(&self) -> u32 {
+        self.base_priority.load(SeqCst)
+    }
+
+    pub fn set_base_priority(&self, priority: u32) {
+        self.base_priority.store(priority, SeqCst);
+    }
+
+    pub fn waiting_lock(&self) -> Option<usize> {
+        *self.waiting_lock.lock()
+    }
+
+    pub fn set_waiting_lock(&self, lock_id: Option<usize>) {
+        *self.waiting_lock.lock() = lock_id;
+    }
+
+    pub fn update_donation(&self, donor_tid: isize, lock_id: usize, priority: u32) -> bool {
+        let mut donations = self.donations.lock();
+        if let Some(d) = donations
+            .iter_mut()
+            .find(|d| d.donor_tid == donor_tid && d.lock_id == lock_id)
+        {
+            d.priority = priority;
+        } else {
+            donations.push(Donation {
+                donor_tid,
+                lock_id,
+                priority,
+            });
+        }
+        drop(donations);
+        self.refresh_priority()
+    }
+
+    pub fn remove_donations_for_lock(&self, lock_id: usize) -> bool {
+        self.donations.lock().retain(|d| d.lock_id != lock_id);
+        self.refresh_priority()
+    }
+
+    pub fn refresh_priority(&self) -> bool {
+        let donated = self
+            .donations
+            .lock()
+            .iter()
+            .map(|d| d.priority)
+            .max()
+            .unwrap_or(PRI_MIN);
+        let new_priority = self.base_priority().max(donated);
+        let old_priority = self.priority.swap(new_priority, SeqCst);
+
+        if old_priority != new_priority && self.status() == Status::Ready {
+            Manager::get()
+                .scheduler
+                .lock()
+                .reprioritize(self.id(), new_priority);
+        }
+
+        old_priority != new_priority
     }
 
     pub fn overflow(&self) -> bool {

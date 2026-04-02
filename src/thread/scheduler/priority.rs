@@ -40,4 +40,15 @@ impl Schedule for Priority {
         }
         None
     }
+
+    fn reprioritize(&mut self, tid: isize, priority: u32) {
+        for q in &mut self.ready {
+            if let Some(idx) = q.iter().position(|t| t.id() == tid) {
+                if let Some(thread) = q.remove(idx) {
+                    self.ready[priority as usize].push_back(thread);
+                }
+                break;
+            }
+        }
+    }
 }

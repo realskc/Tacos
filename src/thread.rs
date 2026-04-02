@@ -99,12 +99,49 @@ pub(crate) fn maybe_preempt() {
     interrupt::set(old);
 }
 
+pub(crate) fn propagate_priority(start: Arc<Thread>) {
+    let mut donor = start;
+
+    for _ in 0..64 {
+        let lock_id = match donor.waiting_lock() {
+            Some(lock_id) => lock_id,
+            None => break,
+        };
+
+        let holder = match crate::sync::sleep::holder_of(lock_id) {
+            Some(holder) => holder,
+            None => break,
+        };
+
+        if holder.id() == donor.id() {
+            break;
+        }
+
+        let changed = holder.update_donation(donor.id(), lock_id, donor.priority());
+        if !changed {
+            break;
+        }
+
+        donor = holder;
+    }
+}
+
 /// (Lab1) Sets the current thread's priority to a given value
 pub fn set_priority(priority: u32) {
     assert!(priority <= PRI_MAX);
 
-    current().set_priority(priority);
+    let old = interrupt::set(false);
+
+    let current = current();
+    current.set_base_priority(priority);
+    let changed = current.refresh_priority();
+
+    if changed && current.waiting_lock().is_some() {
+        propagate_priority(current.clone());
+    }
+
     maybe_preempt();
+    interrupt::set(old);
 }
 
 /// (Lab1) Returns the current thread's effective priority.
