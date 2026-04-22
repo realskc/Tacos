@@ -34,12 +34,25 @@ impl Semaphore {
     /// P operation
     pub fn down(&self) {
         let old = sbi::interrupt::set(false);
+        let current = thread::current();
 
         while self.value() == 0 {
-            // 为了在相同优先级下保持 FIFO，这里把新的 waiter 放到队尾。
-            self.waiters.borrow_mut().push_back(thread::current());
+            // Avoid duplicate waiters when a thread is spuriously woken by some
+            // other synchronization object before this semaphore is signaled.
+            if !self
+                .waiters
+                .borrow()
+                .iter()
+                .any(|thread| thread.id() == current.id())
+            {
+                // 为了在相同优先级下保持 FIFO，这里把新的 waiter 放到队尾。
+                self.waiters.borrow_mut().push_back(current.clone());
+            }
             thread::block();
         }
+        self.waiters
+            .borrow_mut()
+            .retain(|thread| thread.id() != current.id());
         self.value.set(self.value() - 1);
 
         sbi::interrupt::set(old);

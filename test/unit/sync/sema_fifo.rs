@@ -1,5 +1,5 @@
-use crate::thread;
 use crate::sync::Semaphore;
+use crate::thread;
 
 use alloc::sync::Arc;
 

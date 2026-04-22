@@ -7,6 +7,7 @@ mod syscall;
 use crate::device::{plic, virtio};
 use crate::sbi;
 use crate::thread;
+use crate::userproc;
 use core::arch;
 
 use riscv::register::scause::{Exception::*, Interrupt::*, Trap::*};
@@ -89,10 +90,10 @@ pub extern "C" fn trap_handler(frame: &mut Frame) {
             plic::write_completion(id);
         },
 
-        Exception(InstructionFault) | Exception(IllegalInstruction) => {
-            // TODO: kill user process but not panic kernel
-            panic!("Instruction failure");
-        }
+        Exception(InstructionFault) | Exception(IllegalInstruction) => match frame.sstatus.spp() {
+            SPP::User => userproc::exit(-1),
+            _ => panic!("Instruction failure"),
+        },
 
         Exception(f @ LoadPageFault)
         | Exception(f @ StorePageFault)

@@ -42,12 +42,19 @@ pub fn exit() -> ! {
         #[cfg(feature = "debug")]
         kprintln!("Exit: {:?}", *current);
 
+        crate::userproc::on_parent_exit(current.id());
         current.set_status(Status::Dying);
     }
 
     schedule();
 
     unreachable!("An exited thread shouldn't be scheduled again");
+}
+
+/// Register a newly created thread into the global manager and allow it to run.
+pub(crate) fn register(thread: Arc<Thread>) {
+    Manager::get().register(thread);
+    maybe_preempt();
 }
 
 /// Mark the current thread as [`Blocked`](Status::Blocked) and
